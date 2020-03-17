@@ -3,24 +3,36 @@ from mxnet.gluon import nn
 from math import ceil
 
 
+class ReLU6(nn.HybridBlock):
+    def __init__(self, **kwargs):
+        super(ReLU6, self).__init__(**kwargs)
+
+    def hybrid_forward(self, F, x):
+        return F.clip(x, 0, 6, name="relu6")
+
+
 def _add_conv(out, channels=1, kernel=1, stride=1, pad=0,
-              num_group=1, active=True):
+              num_group=1, active=True, lite=False):
     out.add(nn.Conv2D(channels, kernel, stride, pad, groups=num_group, use_bias=False))
     out.add(nn.BatchNorm(scale=True, momentum=0.99, epsilon=1e-3))
     if active:
-        out.add(nn.Swish())
+        if lite:
+            out.add(ReLU6())
+        else:
+            out.add(nn.Swish())
 
 
 class MBConv(nn.HybridBlock):
-    def __init__(self, in_channels, channels, t, kernel, stride, **kwargs):
+    def __init__(self, in_channels, channels, t, kernel, stride, lite, **kwargs):
         super(MBConv, self).__init__(**kwargs)
         self.use_shortcut = stride == 1 and in_channels == channels
         with self.name_scope():
             self.out = nn.HybridSequential()
-            _add_conv(self.out, in_channels * t, active=True)
+            _add_conv(self.out, in_channels * t, active=True, lite=lite)
             _add_conv(self.out, in_channels * t, kernel=kernel, stride=stride,
-                      pad=int((kernel-1)/2), num_group=in_channels * t, active=True)
-            _add_conv(self.out, channels, active=False)
+                      pad=int((kernel-1)/2), num_group=in_channels * t,
+                      active=True, lite=lite)
+            _add_conv(self.out, channels, active=False, lite=lite)
 
     def hybrid_forward(self, F, x):
         out = self.out(x)
@@ -45,13 +57,16 @@ class EfficientNet(nn.HybridBlock):
         Number of classes for the output layer.
     """
 
-    def __init__(self, alpha=1.0, beta=1.0, dropout_rate=0.0, classes=1000, **kwargs):
+    def __init__(self, alpha=1.0, beta=1.0, lite=False,
+                 dropout_rate=0.0, classes=1000, **kwargs):
         super(EfficientNet, self).__init__(**kwargs)
         with self.name_scope():
             self.features = nn.HybridSequential(prefix='features_')
             with self.features.name_scope():
                 # stem conv
-                _add_conv(self.features, int(32 * beta), kernel=3, stride=2, pad=1)
+                channels = 32 if lite else int(32 * beta)
+                _add_conv(self.features, channels, kernel=3, stride=2, pad=1,
+                          active=True, lite=lite)
 
                 # base model settings
                 repeats = [1, 2, 2, 3, 3, 4, 1]
@@ -74,11 +89,12 @@ class EfficientNet(nn.HybridBlock):
 
                 # add MBConv layers
                 for in_c, c, t, k, s in zip(in_channels_group, channels_group, ts, kernels, strides):
-                    self.features.add(MBConv(in_channels=in_c, channels=c, t=t, kernel=k, stride=s))
+                    self.features.add(MBConv(in_channels=in_c, channels=c, t=t, kernel=k,
+                                             stride=s, lite=lite))
 
                 # head layers
-                last_channels = int(1280 * beta) if beta > 1.0 else 1280
-                _add_conv(self.features, last_channels)
+                last_channels = int(1280 * beta) if not lite and beta > 1.0 else 1280
+                _add_conv(self.features, last_channels, active=True, lite=lite)
                 self.features.add(nn.GlobalAvgPool2D())
 
             # features dropout
@@ -100,7 +116,7 @@ class EfficientNet(nn.HybridBlock):
         return x
 
 
-def get_efficientnet(model_name):
+def get_efficientnet(model_name, num_classes=1000):
     params_dict = { # (width_coefficient, depth_coefficient, input_resolution, dropout_rate)
         'efficientnet-b0': (1.0, 1.0, 224, 0.2),
         'efficientnet-b1': (1.0, 1.1, 240, 0.2),
@@ -112,6 +128,20 @@ def get_efficientnet(model_name):
         'efficientnet-b7': (2.0, 3.1, 600, 0.5)
     }
     width_coeff, depth_coeff, input_resolution, dropout_rate = params_dict[model_name]
-    model = EfficientNet(alpha=depth_coeff, beta=width_coeff, dropout_rate=dropout_rate)
+    model = EfficientNet(alpha=depth_coeff, beta=width_coeff, lite=False,
+                         dropout_rate=dropout_rate, classes=num_classes)
     return model, input_resolution
 
+
+def get_efficientnet_lite(model_name, num_classes=1000):
+    params_dict = { # (width_coefficient, depth_coefficient, input_resolution, dropout_rate)
+        'efficientnet-lite0': (1.0, 1.0, 224, 0.2),
+        'efficientnet-lite1': (1.0, 1.1, 240, 0.2),
+        'efficientnet-lite2': (1.1, 1.2, 260, 0.3),
+        'efficientnet-lite3': (1.2, 1.4, 280, 0.3),
+        'efficientnet-lite4': (1.4, 1.8, 300, 0.3)
+    }
+    width_coeff, depth_coeff, input_resolution, dropout_rate = params_dict[model_name]
+    model = EfficientNet(alpha=depth_coeff, beta=width_coeff, lite=True,
+                         dropout_rate=dropout_rate, classes=num_classes)
+    return model, input_resolution
