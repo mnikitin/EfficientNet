@@ -1,8 +1,6 @@
-import argparse, time, logging, os, math
+import argparse, time, logging, os, sys, math
 
-import numpy as np
 import mxnet as mx
-import gluoncv as gcv
 from mxnet import gluon, nd
 from mxnet import autograd as ag
 from mxnet.gluon import nn
@@ -13,6 +11,7 @@ gcv.utils.check_version('0.6.0')
 from gluoncv.data import imagenet
 from gluoncv.utils import makedirs, LRSequential, LRScheduler
 
+sys.path.insert(1, os.path.join(sys.path[0], '..'))
 from efficientnet_model import get_efficientnet, get_efficientnet_lite
 
 # CLI
